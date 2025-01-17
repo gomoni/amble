@@ -5,11 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gomoni/amble/internal/auth"
 	"github.com/gomoni/amble/internal/auth/github"
 	"github.com/gomoni/amble/internal/test"
+	"github.com/justinas/alice"
 	"github.com/justinas/nosurf"
 
 	"github.com/stretchr/testify/mock"
@@ -52,7 +55,7 @@ const githubUserInfo = `{
   "following": 4,
   "created_at": "2006-01-02T06:02:12Z",
   "updated_at": "2025-01-15T09:43:23Z"
-	}`
+}`
 
 type oauth2Mock struct {
 	mock.Mock
@@ -73,36 +76,77 @@ func (o *oauth2Mock) Client(ctx context.Context, token *oauth2.Token) *http.Clie
 	return args.Get(0).(*http.Client)
 }
 
+type jwtEncoderMock struct {
+	mock.Mock
+}
+
+func (j *jwtEncoderMock) Encode(claims map[string]interface{}) (string, error) {
+	args := j.Called(claims)
+	return args.String(0), args.Error(1)
+}
+
 func TestGithubLogin(t *testing.T) {
 	const authURL = "https://github.example.net/auth"
 
+	csrfMW := alice.New(nosurf.NewPure)
 	oauth2Mock := &oauth2Mock{}
-	//t.Cleanup(func() { oauth2Mock.AssertExpectations(t) })
-	// given a github login handlers
-	login := github.NewLogin(oauth2Mock)
+	t.Cleanup(func() { oauth2Mock.AssertExpectations(t) })
+	jwtEncoder := &jwtEncoderMock{}
+	t.Cleanup(func() { jwtEncoder.AssertExpectations(t) })
 
+	// given a github login handlers
+	login := github.NewLogin(oauth2Mock, jwtEncoder)
+
+	// and given we have a correct csfr token
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	var requestToken string
+	csrfMW.ThenFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestToken = nosurf.Token(r)
+		w.WriteHeader(http.StatusNoContent)
+	}).ServeHTTP(w, r)
+	require.Equal(t, http.StatusNoContent, w.Code)
+	cookies := w.Result().Cookies()
+	cookieToken := csrfToken(cookies)
+
+	// and given a CSRF protection cookie exists
+	require.NotEmpty(t, cookieToken)
+	require.NotEmpty(t, requestToken)
+	// and given they're valid
+	require.True(t, nosurf.VerifyToken(requestToken, cookieToken))
+	require.True(t, nosurf.VerifyToken(requestToken, requestToken))
+	require.True(t, nosurf.VerifyToken(cookieToken, requestToken))
+	require.True(t, nosurf.VerifyToken(cookieToken, cookieToken))
+
+	state := auth.State{
+		CSRFToken:   requestToken,
+		RedirectURL: "",
+	}
+	encodedState, err := state.Encode()
+	require.NoError(t, err)
 	oauth2Mock.On(
 		"AuthCodeURL",
 		mock.AnythingOfType("string"),
 		mock.Anything,
-	).Return(authURL + "?state=csrf_token")
+	).Return(authURL + "?state=" + encodedState)
 
-	// when login handler is called
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	login.LoginHandler(w, r)
-	cookies := w.Result().Cookies()
+	// when login handler is called from HTML Form with csrf token
+	w = httptest.NewRecorder()
+	form := url.Values{}
+	form.Set("next_url", "")
+	form.Set(nosurf.FormFieldName, requestToken)
+	r = httptest.NewRequest(http.MethodPost, "/auth/github/login", strings.NewReader(form.Encode()))
+	r.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	for _, cookie := range cookies {
+		r.AddCookie(cookie)
+	}
+	csrfMW.ThenFunc(login.LoginHandler).ServeHTTP(w, r)
 
 	// then it should redirect
 	require.Equal(t, http.StatusSeeOther, w.Code)
-	require.Equal(t, authURL+"?state=csrf_token", w.Header().Get("Location"))
+	require.Equal(t, authURL+"?state="+encodedState, w.Header().Get("Location"))
 
-	// and a CSRF protection cookie should be set
-	token := csrfToken(w.Result().Cookies())
-	require.NotEmpty(t, token)
-	require.True(t, len(token) >= 16)
-
-	// given guthub user API provides a mocked response
+	// given github user API provides a mocked response
 	githubInfoHandlerFunc :=
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -136,15 +180,20 @@ func TestGithubLogin(t *testing.T) {
 		mock.Anything,
 	).Return(infoClient)
 
+	jwtEncoder.On(
+		"Encode",
+		mock.Anything,
+	).Return("jwt", nil)
+
 	w = httptest.NewRecorder()
-	r = httptest.NewRequest(http.MethodGet, "/?state="+url.QueryEscape(token)+"&code=code", nil)
+	r = httptest.NewRequest(http.MethodGet, "/?state="+encodedState+"&code=code", nil)
 	for _, cookie := range cookies {
 		r.AddCookie(cookie)
 	}
-	login.CallbackHandler(w, r)
+	csrfMW.ThenFunc(login.CallbackHandler).ServeHTTP(w, r)
 
-	//require.Equal(t, http.StatusOK, w.Code)
-	//require.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	require.Equal(t, githubUserInfo, w.Body.String())
 }
 

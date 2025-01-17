@@ -1,24 +1,32 @@
 package jwt
 
 import (
+	"crypto"
+	"crypto/ed25519"
 	"fmt"
 	"io"
 )
 
-type Secret [256]byte
-
-func LoadSecret(r io.Reader) (Secret, error) {
-	var s Secret
-	n, err := io.ReadFull(r, s[:])
-	if err != nil {
-		return s, fmt.Errorf("reading secret: %w", err)
-	}
-	if n != len(s) {
-		return s, fmt.Errorf("read len differs, expected 256, got: %d", n)
-	}
-	return s, nil
+type Secret struct {
+	private ed25519.PrivateKey
 }
 
-func (s Secret) Bytes() []byte {
-	return s[:]
+func LoadSecret(r io.Reader) (Secret, error) {
+	seed, err := io.ReadAll(r)
+	if err != nil {
+		return Secret{}, fmt.Errorf("read jwt ed25519 seed: %w", err)
+	}
+	if len(seed) != ed25519.SeedSize {
+		return Secret{}, fmt.Errorf("insufficient len of jwt ed25519 seed: got %d, expected %d", len(seed), ed25519.SeedSize)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	return Secret{private: priv}, nil
+}
+
+func (s Secret) Private() crypto.PrivateKey {
+	return s.private
+}
+
+func (s Secret) Public() crypto.PublicKey {
+	return s.private.Public()
 }

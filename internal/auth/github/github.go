@@ -19,18 +19,18 @@ import (
 const userInfoEndpoint = "https://api.github.com/user"
 
 type Login struct {
-	conf        auth.OAuth2
-	jwtEncoder  auth.JWTEncoder
-	redirectURL string
+	conf       auth.OAuth2
+	jwtEncoder auth.JWTEncoder
 }
 
-var csrfMW = nosurf.New
-
-func NewLogin(conf auth.OAuth2) Login {
-	return Login{conf: conf}
+func NewLogin(conf auth.OAuth2, encoder auth.JWTEncoder) Login {
+	return Login{
+		conf:       conf,
+		jwtEncoder: encoder,
+	}
 }
 
-func FromSecrets(secrets auth.Secrets) Login {
+func NewFromSecrets(secrets auth.Secrets, encoder auth.JWTEncoder) Login {
 	return Login{
 		conf: &oauth2.Config{
 			ClientID:     secrets.ClientID,
@@ -38,37 +38,44 @@ func FromSecrets(secrets auth.Secrets) Login {
 			Scopes:       []string{},
 			Endpoint:     github.Endpoint,
 		},
+		jwtEncoder: encoder,
 	}
 }
 
-func (gh Login) WithJWTEncoder(jwtEncoder auth.JWTEncoder) Login {
-	gh.jwtEncoder = jwtEncoder
-	return gh
-}
-func (gh Login) WithRedirectURL(redirectURL string) Login {
-	gh.redirectURL = redirectURL
-	return gh
-}
-
 func (gh Login) LoginHandler(w http.ResponseWriter, r *http.Request) {
-	// CSRF protection - too important for authn to be left to the caller.
-	h := csrfMW(http.HandlerFunc(gh.loginHandler))
-	h.ServeHTTP(w, r)
-}
+	if !nosurf.VerifyToken(nosurf.Token(r), r.Form.Get(nosurf.FormFieldName)) {
+		var reason string
+		nosurfErr := nosurf.Reason(r)
+		if nosurfErr != nil {
+			reason = ": " + nosurfErr.Error()
+		}
+		http.Error(w, "CSFR protection failed"+reason, http.StatusBadRequest)
+		return
+	}
 
-func (gh Login) loginHandler(w http.ResponseWriter, r *http.Request) {
-	token := nosurf.Token(r)
-	redirectURL := gh.conf.AuthCodeURL(token)
+	state := auth.State{
+		CSRFToken:   nosurf.Token(r),
+		RedirectURL: r.Form.Get("next_url"),
+	}
+	encodedState, err := state.Encode()
+	if err != nil {
+		http.Error(w, "preparing state parameter for authentication: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	redirectURL := gh.conf.AuthCodeURL(encodedState)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
 func (gh Login) CallbackHandler(w http.ResponseWriter, r *http.Request) {
-	h := csrfMW(http.HandlerFunc(gh.callbackHandler))
-	h.ServeHTTP(w, r)
-}
+	var state auth.State
+	err := state.Decode(r.URL.Query().Get("state"))
+	if err != nil {
+		http.Error(w, "decoding state parameter from authentication system: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-func (gh Login) callbackHandler(w http.ResponseWriter, r *http.Request) {
-	if !nosurf.VerifyToken(nosurf.Token(r), r.URL.Query().Get("state")) {
+	if !nosurf.VerifyToken(nosurf.Token(r), state.CSRFToken) {
 		var reason string
 		nosurfErr := nosurf.Reason(r)
 		if nosurfErr != nil {
@@ -135,11 +142,11 @@ func (gh Login) callbackHandler(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 	})
 
-	if gh.redirectURL == "" {
+	if state.RedirectURL == "" {
 		w.Header().Set("Content-type", "application/json")
 		fmt.Fprint(w, string(respbody))
 		return
 	} else {
-		http.Redirect(w, r, gh.redirectURL, http.StatusSeeOther)
+		http.Redirect(w, r, state.RedirectURL, http.StatusSeeOther)
 	}
 }

@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 )
 
 func TestEncoder_Encode(t *testing.T) {
-	var buf [256]byte
+	var buf [ed25519.SeedSize]byte
 	_, err := rand.Read(buf[:])
 	require.NoError(t, err)
 
@@ -22,13 +23,15 @@ func TestEncoder_Encode(t *testing.T) {
 		"email":   "joe.doe@example.net",
 		"name":    "Joe Doe",
 		"picture": "https://example.net/joe.jpg",
+		"iss":     "test",
+		"sub":     "12345678",
 	})
 	require.NoError(t, err)
 
-	user, err := encoder.Decode(token)
+	claims, err := encoder.Decode(token)
 	require.NoError(t, err)
 
-	require.Equal(t, "Joe Doe", user.Name)
+	require.Equal(t, "Joe Doe", claims.Name)
 
 	_, err = encoder.Decode(token + "-invalid")
 	require.Error(t, err)

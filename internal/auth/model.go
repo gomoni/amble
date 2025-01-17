@@ -21,11 +21,3 @@ type Secrets struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
 }
-
-type User struct {
-	ID      string
-	Name    string
-	Email   string
-	Picture string
-	Issuer  string
-}

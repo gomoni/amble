@@ -13,11 +13,15 @@ import (
 	"github.com/gomoni/amble/internal/auth/github"
 	"github.com/gomoni/amble/internal/auth/jwt"
 	"github.com/gomoni/amble/internal/web"
+	"github.com/justinas/alice"
+	"github.com/justinas/nosurf"
 )
 
 const credentialsDir = `secrets/`
 const servingSchema = "http://"
 const servingAddress = "localhost:8000"
+
+var csrfMW = nosurf.NewPure
 
 func main() {
 	if err := run(); err != nil {
@@ -31,28 +35,32 @@ func run() error {
 		return fmt.Errorf("load github secrets: %w", err)
 	}
 
-	jwtSecrets, err := loadJWTSecrets(credentialsDir, "jwt.secrets.dat")
+	jwtSecrets, err := loadJWTSecrets(credentialsDir, "jwt.ed25519.seed")
 	if err != nil {
 		return fmt.Errorf("load jwt secrets: %w", err)
 	}
 	jwtEncoder := jwt.NewEncoder(jwtSecrets)
 
-	githubLogin := github.FromSecrets(githubSecrets).WithJWTEncoder(jwtEncoder).WithRedirectURL("/dashboard")
+	githubLogin := github.NewFromSecrets(githubSecrets, jwtEncoder)
 
 	logged := logged{jwtDecoder: jwtEncoder}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleIndex)
+
+	loginForm := alice.New(csrfMW)
+	auth := alice.New(csrfMW)
+
+	mux.Handle("GET /{$}", loginForm.ThenFunc(handleIndex))
 	mux.HandleFunc("/dashboard", logged.handleDashboard)
-	mux.HandleFunc("/auth/github/login", githubLogin.LoginHandler)
-	mux.HandleFunc("/auth/github/callback", githubLogin.CallbackHandler)
+	mux.Handle("/auth/github/login", auth.ThenFunc(githubLogin.LoginHandler))
+	mux.Handle("/auth/github/callback", auth.ThenFunc(githubLogin.CallbackHandler))
 
 	log.Printf("Listening on: %s%s\n", servingSchema, servingAddress)
 	return http.ListenAndServe(servingAddress, mux)
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
-	index := web.Index()
+	index := web.Index(nosurf.FormFieldName, nosurf.Token(r))
 	web.Serve(index, w, r)
 }
 
@@ -66,7 +74,7 @@ func (l logged) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing cookie", http.StatusUnauthorized)
 		return
 	}
-	user, err := l.jwtDecoder.Decode(strings.TrimPrefix(cookie.Value, "Bearer "))
+	claims, err := l.jwtDecoder.Decode(strings.TrimPrefix(cookie.Value, "Bearer "))
 	if err != nil {
 		http.Error(w, "can't decode authorization cookie: "+err.Error(), http.StatusUnauthorized)
 		return
@@ -80,7 +88,7 @@ func (l logged) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	<img src="%s" alt="avatar">
 </body>
 `
-	fmt.Fprintf(w, rootHTML, user.Name, user.Issuer, user.Email, user.Picture)
+	fmt.Fprintf(w, rootHTML, claims.Name, claims.Issuer, claims.Email, claims.Picture)
 }
 
 func loadAuthSecrets(credentialsDir string, path string) (auth.Secrets, error) {
@@ -112,9 +120,6 @@ func loadJWTSecrets(credentialsDir, path string) (jwt.Secret, error) {
 	ret, err := jwt.LoadSecret(f)
 	if err != nil {
 		return jwt.Secret{}, fmt.Errorf("read from secrets file %s: %w", path, err)
-	}
-	if len(ret) < 200 {
-		return jwt.Secret{}, fmt.Errorf("too small %s: expected 256, got %d", path, len(ret))
 	}
 	return ret, nil
 }
