@@ -9,6 +9,7 @@
  * ad nkeys based auth - so there will be a client, who can _read_ from user data for login purposes
  * multi-tenancy model
  * at least a basic admin interface - for a display if nothing
+ * duplicate accounts
 
 # TODO
 

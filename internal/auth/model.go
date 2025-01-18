@@ -4,8 +4,16 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/gomoni/amble/internal/tid"
 	"golang.org/x/oauth2"
 )
+
+type UserInfo struct {
+	UserID  tid.UserID `json:"uid"`
+	Name    string     `json:"name"`
+	Email   string     `json:"email"`
+	Picture string     `json:"picture"`
+}
 
 type OAuth2 interface {
 	AuthCodeURL(state string, opts ...oauth2.AuthCodeOption) string

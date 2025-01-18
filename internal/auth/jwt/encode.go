@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/gomoni/amble/internal/auth"
 )
 
 type Encoder struct {
@@ -15,10 +16,7 @@ type Encoder struct {
 // simplifying an usage
 type Claims struct {
 	jwt.RegisteredClaims
-	UserID  string `json:"uid"` // this is amble's own unique userID
-	Name    string `json:"name"`
-	Email   string `json:"email"`
-	Picture string `json:"picture"`
+	auth.UserInfo
 }
 
 func NewEncoder(secret Secret) Encoder {
@@ -44,7 +42,6 @@ func (e Encoder) Encode(userInfo map[string]any) (token string, err error) {
 	   * iat (issued at time): Time at which the JWT was issued; can be used to determine age of the JWT
 	   * jti (JWT ID): Unique identifier; can be used to prevent the JWT from being replayed (allows a token to be used only once)
 	*/
-
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "amble",
@@ -55,10 +52,11 @@ func (e Encoder) Encode(userInfo map[string]any) (token string, err error) {
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ID:        "",
 		},
-		UserID:  "user_todo",
-		Email:   info.MustString("email"),
-		Name:    info.MustString("name"),
-		Picture: info.MustString("picture"),
+		UserInfo: auth.UserInfo{
+			Email:   info.MustString("email"),
+			Name:    info.MustString("name"),
+			Picture: info.MustString("picture"),
+		},
 	}
 
 	tokenWithClaims := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
