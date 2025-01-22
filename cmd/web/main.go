@@ -40,10 +40,10 @@ func run() error {
 		return fmt.Errorf("load jwt secrets: %w", err)
 	}
 	jwtEncoder := jwt.NewEncoder(jwtSecrets)
+	jwtDecoder := jwt.NewDecoder(jwtSecrets.Public())
 
 	githubLogin := github.NewFromSecrets(githubSecrets, jwtEncoder)
-
-	logged := logged{jwtDecoder: jwtEncoder}
+	logged := logged{jwtDecoder: jwtDecoder}
 
 	mux := http.NewServeMux()
 
@@ -65,7 +65,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 type logged struct {
-	jwtDecoder jwt.Encoder
+	jwtDecoder jwt.Decoder
 }
 
 func (l logged) handleDashboard(w http.ResponseWriter, r *http.Request) {

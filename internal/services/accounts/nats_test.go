@@ -44,14 +44,14 @@ func TestMe(t *testing.T) {
 
 	account, err := store.Get(context.Background(), uid)
 	require.NoError(t, err)
-	t.Logf("User info: %#v", account)
+	t.Logf("User info: %T %#v", account, account)
 
 	fakeUid, err := tid.NewUserID()
 	require.NoError(t, err)
 
 	_, err = store.Get(context.Background(), fakeUid)
 	require.Error(t, err)
-	t.Logf("Error: %v", err)
+	t.Logf("Error: %T %v", err, err)
 
 	kl, err := kv.ListKeys(ctx, jetstream.MetaOnly(), jetstream.IgnoreDeletes())
 	require.NoError(t, err)
@@ -59,39 +59,79 @@ func TestMe(t *testing.T) {
 		t.Logf("Key: %s", key)
 	}
 
-	s, err := store.List(ctx, "amble.*.user_info")
+	s, err := store.Lister().WithPattern("amble.*.user_info").Iter(ctx)
 	require.NoError(t, err)
-	for user := range s {
-		t.Logf("User: %v", user)
+	var user auth.UserInfo
+	for u := range s {
+		user = u
 	}
 
-	return
+	t.Logf("User info: %#v", user)
 
-	/*
-		// create a link from user to github login
-		const githubID = "583231"
-		_, err = kv.Create(ctx, "github."+githubID+".link", []byte("acc_123"))
-		require.NoError(t, err)
+	const githubID = "583231"
+	_, err = kv.Create(ctx, "auth_link.github."+githubID, []byte(uid.String()))
+	require.NoError(t, err)
 
-		// store a github user info
-		_, err = kv.Create(ctx, "github."+githubID+".user_info", []byte(`{"login": "octocat", "id": 583231}`))
-		require.NoError(t, err)
+	// ensure there is a linked user
+	uid2, err := store.Linked(ctx, "github", githubID)
+	require.NoError(t, err)
+	require.Equal(t, uid, uid2)
 
-		// login via github is then -> get a link for a github ID
-		ret, err := kv.Get(ctx, "github."+githubID+".link")
-		require.NoError(t, err)
-		accountID := string(ret.Value())
-		require.Equal(t, "acc_123", accountID)
+	err = store.UpdateUserInfo(ctx, "github", uid, map[string]any{
+		"sub":   githubID,
+		"login": "octocat",
+	})
+	require.NoError(t, err)
+}
 
-		// read account info
-		ret, err = kv.Get(ctx, accountID+".openid")
-		require.NoError(t, err)
+func TestMatchSubjects(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		pattern string
+		subject string
+		match   bool
+	}{
+		{"a", "", false},
+		{"a", "a", true},
+		{"a", "b", false},
+		{"a.b", "a", false},
+		{"a.b", "a.b", true},
+		{"a.b", "a.c", false},
+		{"a.b.c", "", false},
+		{"a.b.c", "a", false},
+		{"a.b.c", "a.b", false},
+		{"a.b.c", "a.b.", false},
+		{"a.b.c", "a.b.d", false},
+		{"a.b.c", "a.b.c", true},
+		{"a.*", "", false},
+		{"a.*", "a", false},
+		{"a.*", "a.b.c", false},
+		{"a.*", "a.b", true},
+		{"a.*", "a.xyz", true},
+		{"*.a", "", false},
+		{"*.a", "a", false},
+		{"*.a", "a.b.c", false},
+		{"*.a", "a.a", true},
+		{"*.a", "xyz.a", true},
+		{"*.a", "x.a", true},
+		{"a.>", "", false},
+		{"a.>", "a", false},
+		{"a.>", "a.b", true},
+		{"a.>", "a.xyz", true},
+		{"a.>", "a.b.c", true},
+		{"a.>", "a.b.xyz", true},
+		{"*.>", "", false},
+		{"*.>", "a", false},
+		{"*.>", "a.b", true},
+		{"*.>", "xyz.b", true},
+		{"*.>", "c.b.d.e", true},
+		{"*.>", "x.y.z", true},
+	}
 
-		var acc Account
-		err = json.Unmarshal(ret.Value(), &acc)
-		require.NoError(t, err)
-
-		t.Logf("Account: %+v", acc)
-		require.Equal(t, "Octocat", acc.Name)
-	*/
+	for _, test := range tests {
+		t.Run(test.pattern+"-"+test.subject, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.match, accounts.MatchSubject(test.pattern, test.subject))
+		})
+	}
 }

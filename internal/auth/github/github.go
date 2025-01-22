@@ -6,11 +6,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gomoni/amble/internal/auth"
 	"github.com/gomoni/amble/internal/auth/jwt"
 
+	gojwt "github.com/golang-jwt/jwt/v5"
 	"github.com/justinas/nosurf"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
@@ -18,19 +20,23 @@ import (
 
 const userInfoEndpoint = "https://api.github.com/user"
 
-type Login struct {
-	conf       auth.OAuth2
-	jwtEncoder auth.JWTEncoder
+type Encoder interface {
+	Encode(jwt.Claims) (string, error)
 }
 
-func NewLogin(conf auth.OAuth2, encoder auth.JWTEncoder) Login {
+type Login struct {
+	conf       auth.OAuth2
+	jwtEncoder Encoder
+}
+
+func NewLogin(conf auth.OAuth2, encoder Encoder) Login {
 	return Login{
 		conf:       conf,
 		jwtEncoder: encoder,
 	}
 }
 
-func NewFromSecrets(secrets auth.Secrets, encoder auth.JWTEncoder) Login {
+func NewFromSecrets(secrets auth.Secrets, encoder Encoder) Login {
 	return Login{
 		conf: &oauth2.Config{
 			ClientID:     secrets.ClientID,
@@ -113,21 +119,13 @@ func (gh Login) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	smap := jwt.Smap(userInfo)
-	user := map[string]any{
-		"iss":     "github",
-		"sub":     "user-1",
-		"aud":     r.Host,
-		"exp":     time.Now().Add(24 * time.Hour).Unix(),
-		"nbf":     time.Now().Unix(),
-		"iat":     time.Now().Unix(),
-		"id":      "user-1",
-		"email":   smap.Must("email"),
-		"name":    smap.Must("name"),
-		"picture": smap.Must("avatar_url"),
+	claims, err := Claims(userInfo)
+	if err != nil {
+		http.Error(w, "convert github user info to claims: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	jwtToken, err := gh.jwtEncoder.Encode(user)
+	jwtToken, err := gh.jwtEncoder.Encode(claims)
 	if err != nil {
 		http.Error(w, "encode JWT: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -149,4 +147,40 @@ func (gh Login) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		http.Redirect(w, r, state.RedirectURL, http.StatusSeeOther)
 	}
+}
+
+func Claims(userInfo map[string]any) (claims jwt.Claims, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("can't read userInfo: %v", r)
+		}
+	}()
+	/*
+	   https://auth0.com/docs/secure/tokens/json-web-tokens/json-web-token-claims#registered-claims
+	   * iss (issuer): Issuer of the JWT
+	   * sub (subject): Subject of the JWT (the user)
+	   * aud (audience): Recipient for which the JWT is intended
+	   * exp (expiration time): Time after which the JWT expires
+	   * nbf (not before time): Time before which the JWT must not be accepted for processing
+	   * iat (issued at time): Time at which the JWT was issued; can be used to determine age of the JWT
+	   * jti (JWT ID): Unique identifier; can be used to prevent the JWT from being replayed (allows a token to be used only once)
+	*/
+	smap := jwt.Smap(userInfo)
+	claims = jwt.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "github",
+			Subject:   strconv.Itoa(smap.MustInt("id")),
+			Audience:  []string{"app"},
+			ExpiresAt: gojwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			NotBefore: gojwt.NewNumericDate(time.Now()),
+			IssuedAt:  gojwt.NewNumericDate(time.Now()),
+			ID:        "jti",
+		},
+		UserInfo: auth.UserInfo{
+			Name:    smap.MustString("name"),
+			Email:   smap.MustString("email"),
+			Picture: smap.MustString("avatar_url"),
+		},
+	}
+	return
 }

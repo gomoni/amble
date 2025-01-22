@@ -11,6 +11,7 @@ import (
 
 	"github.com/gomoni/amble/internal/auth"
 	"github.com/gomoni/amble/internal/auth/github"
+	"github.com/gomoni/amble/internal/auth/jwt"
 	"github.com/gomoni/amble/internal/test"
 	"github.com/justinas/alice"
 	"github.com/justinas/nosurf"
@@ -80,7 +81,7 @@ type jwtEncoderMock struct {
 	mock.Mock
 }
 
-func (j *jwtEncoderMock) Encode(claims map[string]interface{}) (string, error) {
+func (j *jwtEncoderMock) Encode(claims jwt.Claims) (string, error) {
 	args := j.Called(claims)
 	return args.String(0), args.Error(1)
 }
